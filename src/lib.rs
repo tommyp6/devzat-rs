@@ -1,5 +1,5 @@
 use futures_util::stream;
-use std::error::Error;
+use std::{error::Error, time::Duration};
 use tonic::{
     codegen::InterceptedService,
     metadata::{Ascii, MetadataValue},
@@ -7,6 +7,7 @@ use tonic::{
     transport::Channel,
     Request, Status,
 };
+use tower::timeout::Timeout;
 
 mod plugin {
     tonic::include_proto!("plugin");
@@ -23,7 +24,7 @@ type PluginResult = Result<(), Box<dyn Error>>;
 
 /// Generic implemenation of a gRCP client for a devzat plugin.
 pub struct Client {
-    client: PluginClient<InterceptedService<Channel, AuthInterceptor>>,
+    client: PluginClient<InterceptedService<Timeout<Channel>, AuthInterceptor>>,
 }
 struct AuthInterceptor {
     token: MetadataValue<Ascii>,
@@ -48,8 +49,10 @@ impl Interceptor for AuthInterceptor {
 impl Client {
     pub async fn new<S: Into<String>>(host: S, token: S) -> Result<Self, Box<dyn Error>> {
         let channel = Channel::from_shared(host.into())?.connect().await?;
+        let timeout_channel = Timeout::new(channel, Duration::from_millis(1000)); // Allow for 1s timeout.
+
         let auth = AuthInterceptor::new(token.into());
-        let client = PluginClient::with_interceptor(channel, auth);
+        let client = PluginClient::with_interceptor(timeout_channel, auth);
 
         Ok(Self { client })
     }

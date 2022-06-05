@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 tonic = "0.7.2"
 prost = "0.10"
+tower = "0.4.12"
 tokio = { version = "1.19", features = ["macros", "rt-multi-thread"] }
 futures-util = "0.3.21"
 
