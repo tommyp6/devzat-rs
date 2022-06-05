@@ -1,3 +1,4 @@
+use futures_util::stream;
 use std::error::Error;
 use tonic::{
     codegen::InterceptedService,
@@ -11,9 +12,12 @@ mod plugin {
     tonic::include_proto!("plugin");
 }
 
-pub use plugin::CmdInvocation as Event; // Re-export for command definitons.
+use plugin::{
+    listener_client_data::Data, plugin_client::PluginClient, CmdDef, CmdInvocation, Event,
+    ListenerClientData, Message, MiddlewareResponse,
+};
 
-use plugin::{plugin_client::PluginClient, CmdDef, Message};
+pub use plugin::Listener;
 
 type PluginResult = Result<(), Box<dyn Error>>;
 
@@ -21,7 +25,6 @@ type PluginResult = Result<(), Box<dyn Error>>;
 pub struct Client {
     client: PluginClient<InterceptedService<Channel, AuthInterceptor>>,
 }
-
 struct AuthInterceptor {
     token: MetadataValue<Ascii>,
 }
@@ -71,12 +74,13 @@ impl Client {
     /// );
     ///
     /// client
-    /// .send_message(
-    ///     String::from("#main"),
-    ///     String::from("Rusty"),
-    ///     String::from("Hello World from Rust!"),
-    ///     None,
-    /// ).await?;
+    ///     .send_message(
+    ///         String::from("#main"),
+    ///         String::from("Rusty"),
+    ///         String::from("Hello World from Rust!"),
+    ///         None,
+    ///     )
+    ///     .await?;
     /// ```
     ///
     pub async fn send_message(
@@ -98,12 +102,60 @@ impl Client {
         Ok(())
     }
 
-    // TODO: docs
-    pub async fn register_listener<F>(&mut self, listener: F) -> PluginResult
+    /// # Arguments
+    ///
+    /// `listener` - [Listener] struct containing information about the listener.
+    ///
+    /// `callback` - Asynchronous function to be executed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let listener = Listener {
+    ///     middleware: None,
+    ///     once: None,
+    ///     regex: None,
+    /// };
+    ///
+    /// client
+    ///     .register_listener(listener, |event| move async {
+    ///         eprintln!("room={}, from={}, msg={}", event.room, event.from, event.msg);
+    ///     })
+    ///     .await?;
+    /// ```
+    ///
+    pub async fn register_listener<F, Fut>(
+        &mut self,
+        listener: Listener,
+        callback: F,
+    ) -> PluginResult
     where
-        F: tonic::IntoStreamingRequest<Message = plugin::ListenerClientData>,
+        F: FnOnce(Event) -> Fut,
+        Fut: std::future::Future<Output = Option<String>>,
     {
-        self.client.register_listener(listener).await?;
+        let listener_data = stream::iter(vec![ListenerClientData {
+            data: Some(Data::Listener(listener.clone())),
+        }]);
+
+        let mut event = self
+            .client
+            .register_listener(listener_data)
+            .await?
+            .into_inner();
+
+        // FIXME: Same as #1
+        if let Some(event) = event.message().await? {
+            let result = callback(event).await;
+
+            if !listener.middleware() && result.is_some() {
+                panic!("Function returned a value although it's not marked as a middleware.");
+            }
+
+            // TBD: Send/Write this?
+            // https://github.com/Merlin04/devzat-node/blob/be29a311371b2d7c9814e5dc6cda3a955a8cf628/src/index.ts#L108
+            Data::Response(MiddlewareResponse { msg: result });
+        }
+
         Ok(())
     }
 
@@ -120,10 +172,11 @@ impl Client {
     /// # Examples
     ///
     /// ```
-    /// self.register_cmd("greet", "Greet someone.", "<name>", |event| async move {
-    ///     format!("Hello {}!", event.args)
-    /// })
-    /// .await?;
+    /// client
+    ///     .register_cmd("greet", "Greet someone.", "<name>", |event| async move {
+    ///         format!("Hello {}!", event.args)
+    ///     })
+    ///     .await?;
     /// ```
     ///
     pub async fn register_cmd<S, F, Fut>(
@@ -135,7 +188,7 @@ impl Client {
     ) -> PluginResult
     where
         S: Into<String>,
-        F: FnOnce(Event) -> Fut,
+        F: FnOnce(CmdInvocation) -> Fut,
         Fut: std::future::Future<Output = String>,
     {
         let cmd = CmdDef {
@@ -144,15 +197,12 @@ impl Client {
             args_info: args_info.into(),
         };
 
-        let event = self
-            .client
-            .register_cmd(cmd)
-            .await?
-            .into_inner()
-            .message()
-            .await?;
+        // FIXME #1: https://users.rust-lang.org/t/how-to-create-and-fire-event-listener/32617/5
+        // Need to setup an event listener or otherwise this is a blocking function.
 
-        if let Some(event) = event {
+        let mut event = self.client.register_cmd(cmd).await?.into_inner();
+
+        if let Some(event) = event.message().await? {
             let room = event.room.clone();
             let result = callback(event).await;
             self.send_message(room, None, result, None).await?;
