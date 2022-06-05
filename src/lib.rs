@@ -1,5 +1,11 @@
 use std::error::Error;
-use tonic::{metadata::MetadataValue, transport::Channel, Request};
+use tonic::{
+    codegen::InterceptedService,
+    metadata::{Ascii, MetadataValue},
+    service::Interceptor,
+    transport::Channel,
+    Request, Status,
+};
 
 mod plugin {
     tonic::include_proto!("plugin");
@@ -10,34 +16,37 @@ use plugin::{plugin_client::PluginClient, Message};
 type PluginResult = Result<(), Box<dyn Error>>;
 
 /// Generic implemenation of a gRCP client for a devzat plugin.
-pub struct Client<T> {
-    /// URL of the gRCP server handling client connections.
-    pub host: String,
-    /// Authorization token to connect to the gRCP server.
-    pub token: String,
-    client: Option<T>,
+pub struct Client {
+    client: PluginClient<InterceptedService<Channel, AuthInterceptor>>,
 }
 
-impl<T: crate::plugin::plugin_server::Plugin> Client<T> {
-    pub fn new<S: Into<String>>(host: S, token: S) -> Self {
-        Self {
-            host: host.into(),
-            token: token.into(),
-            client: None,
-        }
+struct AuthInterceptor {
+    token: MetadataValue<Ascii>,
+}
+
+impl AuthInterceptor {
+    pub fn new(token: String) -> Self {
+        let token = format!("Bearer {}", token).parse().unwrap();
+        Self { token }
     }
+}
 
-    pub async fn connect(&mut self) -> PluginResult {
-        let channel = Channel::from_shared(self.host.clone())?.connect().await?;
-        let token: MetadataValue<_> = format!("Bearer {}", self.token).parse()?;
-        let conn = PluginClient::with_interceptor(channel, move |mut req: Request<()>| {
-            req.metadata_mut().insert("authorization", token.clone());
-            Ok(req)
-        });
+impl Interceptor for AuthInterceptor {
+    fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
+        request
+            .metadata_mut()
+            .insert("authorization", self.token.clone());
+        Ok(request)
+    }
+}
 
-        self.client = Some(conn);
+impl Client {
+    pub async fn new<S: Into<String>>(host: S, token: S) -> Result<Self, Box<dyn Error>> {
+        let channel = Channel::from_shared(host.into())?.connect().await?;
+        let auth = AuthInterceptor::new(token.into());
+        let client = PluginClient::with_interceptor(channel, auth);
 
-        Ok(())
+        Ok(Self { client })
     }
 
     /// # Arguments
@@ -54,23 +63,22 @@ impl<T: crate::plugin::plugin_server::Plugin> Client<T> {
     ///
     /// ```
     ///
-    /// let client = Client::new(
+    /// let mut client = Client::new(
     ///     "https://devzat.hackclub.com:5556",
     ///     "dvz.token@hello.world1234",
     /// );
     ///
-    /// client.connect()?; // Try to stablish a connection to the server.
-    ///
-    /// client.send_message(
+    /// client
+    /// .send_message(
     ///     String::from("#main"),
     ///     String::from("Rusty"),
     ///     String::from("Hello World from Rust!"),
     ///     None,
-    /// )?;
+    /// ).await?;
     /// ```
     ///
     pub async fn send_message(
-        &self,
+        &mut self,
         room: String,
         from: Option<String>,
         msg: String,
@@ -83,10 +91,26 @@ impl<T: crate::plugin::plugin_server::Plugin> Client<T> {
             ephemeral_to,
         });
 
-        if let Some(client) = &self.client {
-            client.send_message(req).await?;
-        }
+        self.client.send_message(req).await?;
 
+        Ok(())
+    }
+
+    // TODO: docs
+    pub async fn register_listener<F>(&mut self, listener: F) -> PluginResult
+    where
+        F: tonic::IntoStreamingRequest<Message = plugin::ListenerClientData>,
+    {
+        self.client.register_listener(listener).await?;
+        Ok(())
+    }
+
+    // TODO: docs
+    pub async fn register_cmd<F>(&mut self, command: F) -> PluginResult
+    where
+        F: tonic::IntoRequest<plugin::CmdDef>,
+    {
+        self.client.register_cmd(command).await?;
         Ok(())
     }
 }
