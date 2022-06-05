@@ -11,7 +11,9 @@ mod plugin {
     tonic::include_proto!("plugin");
 }
 
-use plugin::{plugin_client::PluginClient, Message};
+pub use plugin::CmdInvocation as Event; // Re-export for command definitons.
+
+use plugin::{plugin_client::PluginClient, CmdDef, Message};
 
 type PluginResult = Result<(), Box<dyn Error>>;
 
@@ -105,12 +107,57 @@ impl Client {
         Ok(())
     }
 
-    // TODO: docs
-    pub async fn register_cmd<F>(&mut self, command: F) -> PluginResult
+    /// # Arguments
+    ///
+    /// `name` - Command name.
+    ///
+    /// `info` - Command information.
+    ///
+    /// `args_info` - Information about the command arguments.
+    ///
+    /// `callback` - Asynchronous function that will be ran on command invocation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// self.register_cmd("greet", "Greet someone.", "<name>", |event| async move {
+    ///     format!("Hello {}!", event.args)
+    /// })
+    /// .await?;
+    /// ```
+    ///
+    pub async fn register_cmd<S, F, Fut>(
+        &mut self,
+        name: S,
+        info: S,
+        args_info: S,
+        callback: F,
+    ) -> PluginResult
     where
-        F: tonic::IntoRequest<plugin::CmdDef>,
+        S: Into<String>,
+        F: FnOnce(Event) -> Fut,
+        Fut: std::future::Future<Output = String>,
     {
-        self.client.register_cmd(command).await?;
+        let cmd = CmdDef {
+            name: name.into(),
+            info: info.into(),
+            args_info: args_info.into(),
+        };
+
+        let event = self
+            .client
+            .register_cmd(cmd)
+            .await?
+            .into_inner()
+            .message()
+            .await?;
+
+        if let Some(event) = event {
+            let room = event.room.clone();
+            let result = callback(event).await;
+            self.send_message(room, None, result, None).await?;
+        }
+
         Ok(())
     }
 }
