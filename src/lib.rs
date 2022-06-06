@@ -133,7 +133,7 @@ impl Client {
         callback: F,
     ) -> PluginResult
     where
-        F: FnOnce(Event) -> Fut,
+        F: FnOnce(Event) -> Fut + Copy,
         Fut: std::future::Future<Output = Option<String>>,
     {
         let listener_data = stream::iter(vec![ListenerClientData {
@@ -146,16 +146,16 @@ impl Client {
             .await?
             .into_inner();
 
-        // FIXME: Same as #1
-        if let Some(event) = event.message().await? {
+        while let Some(event) = event.message().await? {
             let result = callback(event).await;
 
             if !listener.middleware() && result.is_some() {
                 panic!("Function returned a value although it's not marked as a middleware.");
             }
 
-            // TBD: Send/Write this?
+            // TBD: Send/Write this? How?
             // https://github.com/Merlin04/devzat-node/blob/be29a311371b2d7c9814e5dc6cda3a955a8cf628/src/index.ts#L108
+
             Data::Response(MiddlewareResponse { msg: result });
         }
 
@@ -191,7 +191,7 @@ impl Client {
     ) -> PluginResult
     where
         S: Into<String>,
-        F: FnOnce(CmdInvocation) -> Fut,
+        F: FnOnce(CmdInvocation) -> Fut + Copy,
         Fut: std::future::Future<Output = String>,
     {
         let cmd = CmdDef {
@@ -200,12 +200,9 @@ impl Client {
             args_info: args_info.into(),
         };
 
-        // FIXME #1: https://users.rust-lang.org/t/how-to-create-and-fire-event-listener/32617/5
-        // Need to setup an event listener or otherwise this is a blocking function.
-
         let mut event = self.client.register_cmd(cmd).await?.into_inner();
 
-        if let Some(event) = event.message().await? {
+        while let Some(event) = event.message().await? {
             let room = event.room.clone();
             let result = callback(event).await;
             self.send_message(room, None, result, None).await?;
