@@ -1,5 +1,5 @@
 use futures_util::stream;
-use std::error::Error;
+use std::{cell::RefCell, error::Error, rc::Rc};
 use tonic::{
     codegen::InterceptedService,
     metadata::{Ascii, MetadataValue},
@@ -23,7 +23,7 @@ type PluginResult = Result<(), Box<dyn Error>>;
 
 /// Generic implemenation of a gRCP client for a devzat plugin.
 pub struct Client {
-    client: PluginClient<InterceptedService<Channel, AuthInterceptor>>,
+    client: Rc<RefCell<PluginClient<InterceptedService<Channel, AuthInterceptor>>>>,
 }
 struct AuthInterceptor {
     token: MetadataValue<Ascii>,
@@ -51,7 +51,9 @@ impl Client {
         let auth = AuthInterceptor::new(token.into());
         let client = PluginClient::with_interceptor(channel, auth);
 
-        Ok(Self { client })
+        Ok(Self {
+            client: Rc::new(RefCell::new(client)),
+        })
     }
 
     /// # Arguments
@@ -84,7 +86,7 @@ impl Client {
     /// ```
     ///
     pub async fn send_message(
-        &mut self,
+        &self,
         room: String,
         from: Option<String>,
         msg: String,
@@ -97,7 +99,7 @@ impl Client {
             ephemeral_to,
         });
 
-        self.client.send_message(req).await?;
+        self.client.borrow_mut().send_message(req).await?;
 
         Ok(())
     }
@@ -124,11 +126,7 @@ impl Client {
     ///     .await?;
     /// ```
     ///
-    pub async fn register_listener<F, Fut>(
-        &mut self,
-        listener: Listener,
-        callback: F,
-    ) -> PluginResult
+    pub async fn register_listener<F, Fut>(&self, listener: Listener, callback: F) -> PluginResult
     where
         F: FnOnce(Event) -> Fut + Copy,
         Fut: std::future::Future<Output = Option<String>>,
@@ -139,6 +137,7 @@ impl Client {
 
         let mut event = self
             .client
+            .borrow_mut()
             .register_listener(listener_data)
             .await?
             .into_inner();
@@ -180,7 +179,7 @@ impl Client {
     /// ```
     ///
     pub async fn register_cmd<S, F, Fut>(
-        &mut self,
+        &self,
         name: S,
         info: S,
         args_info: S,
@@ -197,7 +196,12 @@ impl Client {
             args_info: args_info.into(),
         };
 
-        let mut event = self.client.register_cmd(cmd).await?.into_inner();
+        let mut event = self
+            .client
+            .borrow_mut()
+            .register_cmd(cmd)
+            .await?
+            .into_inner();
 
         while let Some(event) = event.message().await? {
             let room = event.room.clone();
