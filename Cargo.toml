@@ -1,6 +1,6 @@
 [package]
 name = "devzat-rs"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "GPL-3.0"
 description = "Rust interface to the devzat gRCP plugin system."
@@ -12,6 +12,7 @@ repository = "https://github.com/TommyPujol06/devzat-rs/"
 [dependencies]
 tonic = "0.7.2"
 prost = "0.10.4"
+prost-build = { version = "0.10.4", features = ["vendored"] }
 futures-util = "0.3.21"
 
 [build-dependencies]
