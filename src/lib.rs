@@ -19,12 +19,18 @@ use plugin::{
 
 pub use plugin::Listener;
 
-type PluginResult = Result<(), Box<dyn Error>>;
+pub type PluginResult = Result<(), Box<dyn Error>>;
 
 /// Generic implemenation of a gRCP client for a devzat plugin.
+///
+/// See example usage: <https://github.com/TommyPujol06/devzat-plugin-rs>
+///
+#[derive(Clone)]
 pub struct Client {
     client: PluginClient<InterceptedService<Channel, AuthInterceptor>>,
 }
+
+#[derive(Clone)]
 struct AuthInterceptor {
     token: MetadataValue<Ascii>,
 }
@@ -69,24 +75,25 @@ impl Client {
     ///
     /// ```
     ///
-    /// let mut client = Client::new(
+    /// let client = Client::new(
     ///     "https://devzat.hackclub.com:5556",
     ///     "dvz.token@hello.world1234",
     /// );
     ///
-    /// client
+    /// let fut = client
     ///     .send_message(
     ///         String::from("#main"),
     ///         String::from("Rusty"),
     ///         String::from("Hello World from Rust!"),
     ///         None,
-    ///     ).await?;
+    ///     );
     ///
+    /// fut.await?;
     /// ```
     ///
 
     pub async fn send_message(
-        &mut self,
+        &self,
         room: String,
         from: Option<String>,
         msg: String,
@@ -99,7 +106,9 @@ impl Client {
             ephemeral_to,
         };
 
-        self.client.send_message(Request::new(msg)).await?;
+        let mut mut_self = self.clone();
+
+        mut_self.client.send_message(Request::new(msg)).await?;
 
         Ok(())
     }
@@ -125,20 +134,18 @@ impl Client {
     ///     }).await?;
     /// ```
     ///
-    pub async fn register_listener<F, Fut>(
-        &mut self,
-        listener: Listener,
-        callback: F,
-    ) -> PluginResult
+    pub async fn register_listener<F, Fut>(&self, listener: Listener, callback: F) -> PluginResult
     where
         F: FnOnce(Event) -> Fut + Copy,
         Fut: std::future::Future<Output = Option<String>>,
     {
+        let mut mut_self = self.clone();
+
         let listener_data = stream::iter(vec![ListenerClientData {
             data: Some(Data::Listener(listener.clone())),
         }]);
 
-        let mut event = self
+        let mut event = mut_self
             .client
             .register_listener(listener_data)
             .await?
@@ -181,7 +188,7 @@ impl Client {
     ///
 
     pub async fn register_cmd<S, F, Fut>(
-        &mut self,
+        &self,
         name: S,
         info: S,
         args_info: S,
@@ -192,18 +199,20 @@ impl Client {
         F: FnOnce(CmdInvocation) -> Fut + Copy,
         Fut: std::future::Future<Output = String>,
     {
+        let mut mut_self = self.clone();
+
         let cmd = CmdDef {
             name: name.into(),
             info: info.into(),
             args_info: args_info.into(),
         };
 
-        let mut event = self.client.register_cmd(cmd).await?.into_inner();
+        let mut event = mut_self.client.register_cmd(cmd).await?.into_inner();
 
         while let Some(event) = event.message().await? {
             let room = event.room.clone();
             let result = callback(event).await;
-            self.send_message(room, None, result, None).await?;
+            mut_self.send_message(room, None, result, None).await?;
         }
 
         Ok(())
