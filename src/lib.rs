@@ -1,5 +1,5 @@
 use futures_util::stream;
-use std::{cell::RefCell, error::Error, rc::Rc};
+use std::error::Error;
 use tonic::{
     codegen::InterceptedService,
     metadata::{Ascii, MetadataValue},
@@ -23,7 +23,7 @@ type PluginResult = Result<(), Box<dyn Error>>;
 
 /// Generic implemenation of a gRCP client for a devzat plugin.
 pub struct Client {
-    client: Rc<RefCell<PluginClient<InterceptedService<Channel, AuthInterceptor>>>>,
+    client: PluginClient<InterceptedService<Channel, AuthInterceptor>>,
 }
 struct AuthInterceptor {
     token: MetadataValue<Ascii>,
@@ -41,6 +41,7 @@ impl Interceptor for AuthInterceptor {
         request
             .metadata_mut()
             .insert("authorization", self.token.clone());
+
         Ok(request)
     }
 }
@@ -51,9 +52,7 @@ impl Client {
         let auth = AuthInterceptor::new(token.into());
         let client = PluginClient::with_interceptor(channel, auth);
 
-        Ok(Self {
-            client: Rc::new(RefCell::new(client)),
-        })
+        Ok(Self { client })
     }
 
     /// # Arguments
@@ -81,25 +80,26 @@ impl Client {
     ///         String::from("Rusty"),
     ///         String::from("Hello World from Rust!"),
     ///         None,
-    ///     )
-    ///     .await?;
+    ///     ).await?;
+    ///
     /// ```
     ///
+
     pub async fn send_message(
-        &self,
+        &mut self,
         room: String,
         from: Option<String>,
         msg: String,
         ephemeral_to: Option<String>,
     ) -> PluginResult {
-        let req = Request::new(Message {
+        let msg = Message {
             room,
             from,
             msg,
             ephemeral_to,
-        });
+        };
 
-        self.client.borrow_mut().send_message(req).await?;
+        self.client.send_message(Request::new(msg)).await?;
 
         Ok(())
     }
@@ -122,11 +122,14 @@ impl Client {
     /// client
     ///     .register_listener(listener, |event| move async {
     ///         eprintln!("room={}, from={}, msg={}", event.room, event.from, event.msg);
-    ///     })
-    ///     .await?;
+    ///     }).await?;
     /// ```
     ///
-    pub async fn register_listener<F, Fut>(&self, listener: Listener, callback: F) -> PluginResult
+    pub async fn register_listener<F, Fut>(
+        &mut self,
+        listener: Listener,
+        callback: F,
+    ) -> PluginResult
     where
         F: FnOnce(Event) -> Fut + Copy,
         Fut: std::future::Future<Output = Option<String>>,
@@ -137,7 +140,6 @@ impl Client {
 
         let mut event = self
             .client
-            .borrow_mut()
             .register_listener(listener_data)
             .await?
             .into_inner();
@@ -174,12 +176,12 @@ impl Client {
     /// client
     ///     .register_cmd("greet", "Greet someone.", "<name>", |event| async move {
     ///         format!("Hello {}!", event.args)
-    ///     })
-    ///     .await?;
+    ///     }).await?;
     /// ```
     ///
+
     pub async fn register_cmd<S, F, Fut>(
-        &self,
+        &mut self,
         name: S,
         info: S,
         args_info: S,
@@ -196,12 +198,7 @@ impl Client {
             args_info: args_info.into(),
         };
 
-        let mut event = self
-            .client
-            .borrow_mut()
-            .register_cmd(cmd)
-            .await?
-            .into_inner();
+        let mut event = self.client.register_cmd(cmd).await?.into_inner();
 
         while let Some(event) = event.message().await? {
             let room = event.room.clone();
