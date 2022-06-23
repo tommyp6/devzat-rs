@@ -2,6 +2,10 @@
 name = "devzat-rs"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0"
+description = "Rust interface to the devzat gRCP plugin system."
+documentation = "https://docs.rs/devzat-rs"
+repository = "https://github.com/TommyPujol06/devzat-rs/"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
